@@ -1,6 +1,6 @@
-#Improve the Performance of Apache Geode Persistence Recovery
+# Improve the Performance of Apache Geode Persistence Recovery
 
-##Introduction
+## Introduction
 
 Apache Geode is a data management platform that provides real-time, consistent access to data-intensive applications throughout widely distributed cloud architectures.
 Geode pools memory, CPU, network resources, and optionally local disk across multiple processes to manage application objects and behavior. 
@@ -21,13 +21,13 @@ The krf oplog will improve startup performance by allowing Geode to load the ent
 When you start a member with a persistent region, the data is retrieved from disk stores to recreate the member’s persistent region. 
 Entry keys are loaded from the key file in the disk store before considering entry values. Once all keys are loaded, Geode loads the entry values asynchronously.
 
-##Challenges for the Performance Persistence Recovery
+## Challenges for the Performance Persistence Recovery
 
 In the recent tests on the cloud environment, we have observed that the persistence recovery takes a long time. 
 We have a Geode cluster with one locator and four servers. We shutdown all the servers, but keep the locators running. And then restart all the servers together. 
 We notice that two of the servers restarted quickly. The other two servers takes significantly longer time to recover the persisted data.
 
-##Remove Unnecessary Thread Synchronization
+## Remove Unnecessary Thread Synchronization
 
 In the Geode server logs, the ThreadsMonitor has put warning messages in the logs to tell which thread is stuck for how long, and which thread currently hold the lock together with the thread stack. 
 The logs show that the thread is waiting on the lock on a HashMap. The log also shows that the initialization of a region takes unusually long time. All these clues are correlated. 
@@ -41,7 +41,7 @@ For log analysis details, please refer to GEODE-7945 and its pull request.
 Once we understand the root cause, the solution becomes clear. We'd better replace HashMap with ConcurrentHashMap, to remove unnecessary synchronization among the threads.
 With ConcurrentHashMap, the persistence recovery time has reduced by 30% for recovering the same amount of persistent data during cluster restart.
 
-##Parallel Disk stores Recovery
+## Parallel Disk stores Recovery
 
 When further analyzing the logs, we noticed that the disk stores are recovered sequentially with single thread. If the disk stores are recovered in parallel, the persistence recovery performance can be dramatically improved. 
 When each region are on different disk store, parallel disk store recovery makes parallel region recovery possible. 
@@ -50,13 +50,13 @@ With the completion of GEODE-8045, parallel disk store recovery is introduced.
 For example, when recovering two regions on two separate disk stores, we can reduce the persistent recovery time in half, compared to the case that two regions sharing the same disk store. 
 With more disk stores, the performance of persistence recovery can be further improved from parallel disk store recovery.
 
-##Conclusion
+## Conclusion
 
 Geode shared-nothing persistence architecture is powerful for fast parallel recovery of nodes or an entire cluster. 
 With recent performance improvement, we further removed the unnecessary thread synchronization during persistence recovery.
 And we also introduced parallel disk store recovery within each node. The improvement has made Geode parallel recovery even faster. 
 
-##Interested Apache Geode? Try it!
+## Interested Apache Geode? Try it!
 
 Apache Geode Home Page: https://geode.apache.org/
 
