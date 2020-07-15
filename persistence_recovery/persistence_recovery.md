@@ -21,21 +21,87 @@ The krf oplog will improve startup performance by allowing Geode to load the ent
 When you start a member with a persistent region, the data is retrieved from disk stores to recreate the member’s persistent region. 
 Entry keys are loaded from the key file in the disk store before considering entry values. Once all keys are loaded, Geode loads the entry values asynchronously.
 
+If you would like to know more about Apache Geode disk storage, here is the link to the documentation: https://geode.apache.org/docs/guide/12/managing/disk_storage/chapter_overview.html
+
 ## Challenges for the Performance Persistence Recovery
 
 In the recent tests on the cloud environment, we have observed that the persistence recovery takes a long time. 
 We have a Geode cluster with one locator and four servers. We shutdown all the servers, but keep the locators running. And then restart all the servers together. 
 We notice that two of the servers restarted quickly. The other two servers takes significantly longer time to recover the persisted data.
+This is not how Geode supposed to work. It is supposed to parallelize the startup of all the servers. This is my journey into how I improved the system recovery performance.
 
 ## Remove Unnecessary Thread Synchronization
 
 In the Geode server logs, the ThreadsMonitor has put warning messages in the logs to tell which thread is stuck for how long, and which thread currently hold the lock together with the thread stack. 
-The logs show that the thread is waiting on the lock on a HashMap. The log also shows that the initialization of a region takes unusually long time. All these clues are correlated. 
+The logs show that the thread is waiting on the lock on a HashMap. The log also shows that the initialization of a region takes unusually long time. All these clues are correlated.
+Here is an example of the warning in the logs.
+
+```
+[warn 2020/03/25 20:59:37.235 UTC <ThreadsMonitor> tid=0x1a] Thread <49> (0x31) that was executed at <25 Mar 2020 20:57:45 UTC> has been stuck for <112.207 seconds> and number of thread monitor iteration <1>
+Thread Name <Pooled High Priority Message Processor 2> state <BLOCKED>
+Waiting on <java.util.HashMap@1ddcdf90>
+Owned By <main> with ID <1>
+Executor Group <PooledExecutorWithDMStats>
+Monitored metric <ResourceManagerStats.numThreadsStuck>
+Thread stack:
+org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3212)
+org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3061)
+org.apache.geode.internal.cache.CreateRegionProcessor$CreateRegionMessage.process(CreateRegionProcessor.java:362)
+org.apache.geode.distributed.internal.DistributionMessage.scheduleAction(DistributionMessage.java:376)
+org.apache.geode.distributed.internal.DistributionMessage$1.run(DistributionMessage.java:440)
+java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+org.apache.geode.distributed.internal.ClusterOperationExecutors.runUntilShutdown(ClusterOperationExecutors.java:442)
+org.apache.geode.distributed.internal.ClusterOperationExecutors.doHighPriorityThread(ClusterOperationExecutors.java:400)
+org.apache.geode.distributed.internal.ClusterOperationExecutors$$Lambda$66/41595398.invoke(Unknown Source)
+org.apache.geode.logging.internal.executors.LoggingThreadFactory.lambda$newThread$0(LoggingThreadFactory.java:119)
+org.apache.geode.logging.internal.executors.LoggingThreadFactory$$Lambda$64/550498846.run(Unknown Source)
+java.lang.Thread.run(Thread.java:748)
+Lock owner thread stack
+org.apache.geode.internal.cache.Oplog.readKrf(Oplog.java:1762)
+org.apache.geode.internal.cache.Oplog.recoverCrf(Oplog.java:2211)
+org.apache.geode.internal.cache.PersistentOplogSet.recoverOplogs(PersistentOplogSet.java:475)
+org.apache.geode.internal.cache.PersistentOplogSet.recoverRegionsThatAreReady(PersistentOplogSet.java:379)
+org.apache.geode.internal.cache.DiskStoreImpl.recoverRegionsThatAreReady(DiskStoreImpl.java:2074)
+org.apache.geode.internal.cache.DiskStoreImpl.initializeIfNeeded(DiskStoreImpl.java:2062)
+org.apache.geode.internal.cache.DiskStoreImpl.doInitialRecovery(DiskStoreImpl.java:2067)
+org.apache.geode.internal.cache.DiskStoreFactoryImpl.initializeDiskStore(DiskStoreFactoryImpl.java:191)
+org.apache.geode.internal.cache.DiskStoreFactoryImpl.create(DiskStoreFactoryImpl.java:157)
+org.apache.geode.internal.cache.GemFireCacheImpl.getOrCreateDefaultDiskStore(GemFireCacheImpl.java:2504)
+org.apache.geode.internal.cache.LocalRegion.findDiskStore(LocalRegion.java:7488)
+org.apache.geode.internal.cache.PartitionedRegion.findDiskStore(PartitionedRegion.java:9184)
+org.apache.geode.internal.cache.LocalRegion.<init>(LocalRegion.java:603)
+org.apache.geode.internal.cache.LocalRegion.<init>(LocalRegion.java:547)
+org.apache.geode.internal.cache.PartitionedRegion.<init>(PartitionedRegion.java:760)
+org.apache.geode.internal.cache.GemFireCacheImpl.createVMRegion(GemFireCacheImpl.java:2925)
+org.apache.geode.internal.cache.GemFireCacheImpl.basicCreateRegion(GemFireCacheImpl.java:2869)
+org.apache.geode.internal.cache.xmlcache.RegionCreation.createRoot(RegionCreation.java:237)
+org.apache.geode.internal.cache.xmlcache.CacheCreation.initializeRegions(CacheCreation.java:658)
+org.apache.geode.internal.cache.xmlcache.CacheCreation.create(CacheCreation.java:592)
+org.apache.geode.internal.cache.xmlcache.CacheXmlParser.create(CacheXmlParser.java:339)
+org.apache.geode.internal.cache.GemFireCacheImpl.loadCacheXml(GemFireCacheImpl.java:4081)
+org.apache.geode.internal.cache.ClusterConfigurationLoader.applyClusterXmlConfiguration(ClusterConfigurationLoader.java:208)
+org.apache.geode.internal.cache.GemFireCacheImpl.applyJarAndXmlFromClusterConfig(GemFireCacheImpl.java:1406)
+org.apache.geode.internal.cache.GemFireCacheImpl.initialize(GemFireCacheImpl.java:1371)
+org.apache.geode.internal.cache.InternalCacheBuilder.create(InternalCacheBuilder.java:191)                                                                                                                                                                                                           org.apache.geode.internal.cache.InternalCacheBuilder.create(InternalCacheBuilder.java:158)
+org.apache.geode.cache.CacheFactory.create(CacheFactory.java:142)
+org.apache.geode.distributed.internal.DefaultServerLauncherCacheProvider.createCache(DefaultServerLauncherCacheProvider.java:52)
+org.apache.geode.distributed.ServerLauncher.createCache(ServerLauncher.java:892)
+org.apache.geode.distributed.ServerLauncher.start(ServerLauncher.java:807)
+org.apache.geode.distributed.ServerLauncher.run(ServerLauncher.java:737)
+org.apache.geode.distributed.ServerLauncher.main(ServerLauncher.java:256)
+```
+
 With the help of the warning messages and the stack trace, we have identified that in the source code, the synchronization of HashMap has costed the persistence recovery to slow down significantly. 
 One thread on one server is holding the lock while recovering the persisted krf oplogs. 
-While the other thread is waiting for the lock to be released before replying a message to the other server, which caused the other server to be blocked before its persistence recovery. 
+In the example log, see the `Lock owner thread stack`, one thread is executing `org.apache.geode.internal.cache.Oplog.readKrf(Oplog.java:1762)`, 
+while holding the lock on the HashMap `GemFireCacheImpl.rootRegions` at
+`org.apache.geode.internal.cache.GemFireCacheImpl.createVMRegion(GemFireCacheImpl.java:2925)`
+The other thread is waiting for the same lock on the HashMap `GemFireCacheImpl.rootRegions` to be released before replying a message to the other server, 
+which caused the other server to be blocked before its persistence recovery.
+Please see `org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3212)` in the example log. 
 And the blocked server has to wait until the server who holds the lock on HashMap finishes persistence recovery. 
-The thread synchronization on one server has affected the progress of the other server. In Geode, the servers exchange messages to collaborate on certain work like region creation.
+The thread synchronization on one server has affected the progress of the other server. In Geode, the servers exchange messages such as request and response messages to collaborate on certain work like region creation.
 For log analysis details, please refer to GEODE-7945 and its pull request.
 
 Once we understand the root cause, the solution becomes clear. We'd better replace HashMap with ConcurrentHashMap, to remove unnecessary synchronization among the threads.
@@ -43,12 +109,37 @@ With ConcurrentHashMap, the persistence recovery time has reduced by 30% for rec
 
 ## Parallel Disk stores Recovery
 
-When further analyzing the logs, we noticed that the disk stores are recovered sequentially with single thread. If the disk stores are recovered in parallel, the persistence recovery performance can be dramatically improved. 
-When each region are on different disk store, parallel disk store recovery makes parallel region recovery possible. 
+When further analyzing the logs, we noticed that the disk stores are recovered sequentially with single thread. There is an opportunity to improve the recovery performance here.
+If the disk stores are recovered in parallel, 
+the persistence recovery performance can be dramatically improved. 
+When each region is on different disk store, parallel disk store recovery makes parallel region recovery possible. 
 Especially when the disk stores are on different disk controllers. So that the disk stores don't have to compete for the same disk controller. 
-With the completion of GEODE-8045, parallel disk store recovery is introduced. 
+With the completion of GEODE-8035, parallel disk store recovery is introduced. 
 For example, when recovering two regions on two separate disk stores, we can reduce the persistent recovery time in half, compared to the case that two regions sharing the same disk store. 
 With more disk stores, the performance of persistence recovery can be further improved from parallel disk store recovery.
+
+## Performance Results
+
+Replacing HashMap with ConcurrentHashMap for `GemFireCahceImpl.rootRegions` eliminates the unnecessary blocking of threads during the cluster restart disk recovery process. 
+Initial tests with and without partition region redundancy and varying number of region buckets (up to 2753 buckets) and Geode servers(up to 70 servers) with up to 2 billion entries 
+have shown that the change can reduce the cluster restart time by up to 30%. 
+
+To speed up the recovery of multiple regions, it is recommended to have different disk stores for different regions. 
+i.e. One to one mapping between region and disk store. So that every region has its dedicated disk store. 
+Assigning the disk stores to separate disk controllers can further improve the performance.
+We have tested this scenario on Google Cloud. With two partitioned regions sharing the same default disk store, it takes 13 minutes to recover 100 million entries on 4 servers. 
+If the two regions each has its own disk store, even though the two disk stores share the same SSD, the recovery time drops to 10 minutes, a 23% reduction in recovery time. 
+For two regions with two disk stores on two different disk controllers, 
+the recovery time drops to 7 minutes with parallel disk store recovery.
+This is almost 50% reduction of recovery time compared to the case where two regions share a single default disk store.  
+
+With the new feature, by default, the disk stores are recovered by multiple threads in parallel when the cluster restarts. 
+This significantly improves the performance of disk store recovery. 
+ 
+ 
+
+For backward compatibility, we introduce a new boolean system property parallelDiskStoreRecovery. The default value is true. The disk stores recover in parallel by default. If the users prefer sequential disk store recovery, set parallelDiskStoreRecovery to false, when restarting the cluster.
+
 
 ## Conclusion
 
