@@ -7,6 +7,8 @@ Geode pools memory, CPU, network resources, and optionally local disk across mul
 It uses dynamic replication and data partitioning techniques to implement high availability, improved performance, scalability, and fault tolerance. 
 In addition to being a distributed data container, Apache Geode is an in-memory data management system that provides reliable asynchronous event notifications and guaranteed message delivery.
 
+The article assumes you have basic understanding of Apache Geode. You can refer to a quick start at https://geode.apache.org/docs/guide/19/getting_started/book_intro.html
+
 Apache Geode offers super fast write-ahead-logging (WAL) persistence with a shared-nothing architecture that is optimized for fast parallel recovery of nodes or an entire cluster.
 Persistence provides a disk backup of region entry data. The keys and values of all entries are saved to disk, like having a replica of the region on disk. 
 When the member stops for any reason, the region data on disk remains.  The disk data can be used at member startup to populate the same region.
@@ -28,13 +30,17 @@ If you would like to know more about Apache Geode disk storage, here is the link
 In the recent tests on the cloud environment, we have observed that the persistence recovery takes a long time. 
 We have a Geode cluster with one locator and four servers. We shutdown all the servers, but keep the locators running. And then restart all the servers together. 
 We notice that two of the servers restarted quickly. The other two servers takes significantly longer time to recover the persisted data.
-This is not how Geode supposed to work. It is supposed to parallelize the startup of all the servers. This is my journey into how I improved the system recovery performance.
+This is not how Geode supposed to work. It is supposed to parallelize the startup of all the servers. This is our journey into how I improved the system recovery performance.
 
 ## Remove Unnecessary Thread Synchronization
 
-In the Geode server logs, the ThreadsMonitor has put warning messages in the logs to tell which thread is stuck for how long, and which thread currently hold the lock together with the thread stack. 
-The logs show that the thread is waiting on the lock on a HashMap. The log also shows that the initialization of a region takes unusually long time. All these clues are correlated.
-Here is an example of the warning in the logs.
+On one server, one thread holding a lock can block the other thread waiting on the same lock. In distributed system like Geode, this can further block other threads on the other servers. 
+Because Geode servers exchange messages such as request and response messages to collaborate on certain work like region creation. 
+If a thread that is responsible for sending a response to a request from the other server, the other server could be blocked waiting for the response.
+
+In the Geode server logs, the ThreadsMonitor has put warning messages in the logs to tell which thread is stuck waiting for the lock, and which thread currently holds the lock together with the thread stacks. 
+On server1, our log show that the thread is waiting on the lock on a HashMap. 
+Here is an example of the warning in the log.
 
 ```
 [warn 2020/03/25 20:59:37.235 UTC <ThreadsMonitor> tid=0x1a] Thread <49> (0x31) that was executed at <25 Mar 2020 20:57:45 UTC> has been stuck for <112.207 seconds> and number of thread monitor iteration <1>
@@ -91,17 +97,34 @@ org.apache.geode.distributed.ServerLauncher.start(ServerLauncher.java:807)
 org.apache.geode.distributed.ServerLauncher.run(ServerLauncher.java:737)
 org.apache.geode.distributed.ServerLauncher.main(ServerLauncher.java:256)
 ```
+  
+In the example log, there are two thread stacks. The stack for the thread waiting for the lock, and the other stack for the thread holding the lock. 
+Thread 49 is waiting for the lock on the HashMap to be released. Based on the thread stack `org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3212)`, 
+we can tell from the source code, the HashMap is `GemFireCacheImpl.rootRegions`.
+From the stack, we can also see `org.apache.geode.internal.cache.CreateRegionProcessor$CreateRegionMessage.process(CreateRegionProcessor.java:362)`. 
+Thread 49 is trying to process a `CreateRegionMessage`, which is sent from the other server in order to create a region. Thread 49 is supposed to generate a `CreateRegionReplyMessage` and return it to the sender of `CreateRegionMessage`. 
+This is part of the process of creating a replicated region in all the servers.
+Keep reading the example log, we can see the `Lock owner thread stack`.
+The lock owner thread is recovering the persisted krf oplogs. Because the thread is executing `org.apache.geode.internal.cache.Oplog.readKrf(Oplog.java:1762)`, 
+while holding the lock on the HashMap `GemFireCacheImpl.rootRegions` at `org.apache.geode.internal.cache.GemFireCacheImpl.createVMRegion(GemFireCacheImpl.java:2925)`
 
-With the help of the warning messages and the stack trace, we have identified that in the source code, the synchronization of HashMap has costed the persistence recovery to slow down significantly. 
-One thread on one server is holding the lock while recovering the persisted krf oplogs. 
-In the example log, see the `Lock owner thread stack`, one thread is executing `org.apache.geode.internal.cache.Oplog.readKrf(Oplog.java:1762)`, 
-while holding the lock on the HashMap `GemFireCacheImpl.rootRegions` at
-`org.apache.geode.internal.cache.GemFireCacheImpl.createVMRegion(GemFireCacheImpl.java:2925)`
-The other thread is waiting for the same lock on the HashMap `GemFireCacheImpl.rootRegions` to be released before replying a message to the other server, 
-which caused the other server to be blocked before its persistence recovery.
-Please see `org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3212)` in the example log. 
-And the blocked server has to wait until the server who holds the lock on HashMap finishes persistence recovery. 
-The thread synchronization on one server has affected the progress of the other server. In Geode, the servers exchange messages such as request and response messages to collaborate on certain work like region creation.
+On one of the other servers, server2, we can see the log:
+```
+[info 2020/03/25 20:57:45.025 UTC <main> tid=0x1] Initializing region _monitoringRegion_10.128.0.32<v8>41000
+
+[warn 2020/03/25 20:58:01.028 UTC <main> tid=0x1] 15 seconds have elapsed while waiting for replies: <CreateRegionProcessor$CreateRegionReplyProcessor 5 waiting for 3 replies from [10.128.0.31(server1:13379)<v7>:41000, 10.128.0.33(server3:14040)<v7>:41000, 10.128.0.34(server4:13170)<v7>:41000]> on 10.128.0.32(server2:13774)<v8>:41000 whose current membership list is: [[10.128.0.30(locator:10836:locator)<ec><v0>:41000, 10.128.0.31(server1:13379)<v7>:41000, 10.128.0.32(server2:13774)<v8>:41000, 10.128.0.33(server3:14040)<v7>:41000, 10.128.0.34(server4:13170)<v7>:41000]]
+
+[info 2020/03/25 21:02:56.281 UTC <main> tid=0x1] CreateRegionProcessor$CreateRegionReplyProcessor wait for replies completed
+
+[info 2020/03/25 21:02:56.283 UTC <main> tid=0x1] Initialization of region _monitoringRegion_10.128.0.32<v8>41000 completed
+
+```
+
+Note the timestamps on the log entries, from initializing region to the completion of region initialization, it takes more than 5 minutes. This is unusually long time. As indicated by the log, this is because `CreateRegionProcessor$CreateRegionReplyProcessor` is waiting for 3 replies from other servers.
+As we can see from the first example log from server1, server1 is blocked, so it cannot send `CreateRegionReplyMessasge` to server2. So server2 is waiting for server1 to reply.
+
+With the help of the warning message and the thread stacks, we have identified that in the source code, the synchronization of HashMap has costed the persistence recovery to slow down significantly.
+The thread synchronization on server1 has affected the progress of server2. 
 For log analysis details, please refer to GEODE-7945 and its pull request.
 
 Once we understand the root cause, the solution becomes clear. We'd better replace HashMap with ConcurrentHashMap, to remove unnecessary synchronization among the threads.
