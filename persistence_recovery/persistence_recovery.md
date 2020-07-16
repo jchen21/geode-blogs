@@ -7,7 +7,7 @@ Geode pools memory, CPU, network resources, and optionally local disk across mul
 It uses dynamic replication and data partitioning techniques to implement high availability, improved performance, scalability, and fault tolerance. 
 In addition to being a distributed data container, Apache Geode is an in-memory data management system that provides reliable asynchronous event notifications and guaranteed message delivery.
 
-The article assumes you have basic understanding of Apache Geode. You can refer to the [quick start](https://geode.apache.org/docs/guide/19/getting_started/book_intro.html)
+The article assumes you have basic understanding of Apache Geode. You can refer to the [quick start](https://geode.apache.org/docs/guide/19/getting_started/book_intro.html).
 
 Apache Geode offers super fast write-ahead-logging (WAL) persistence with a shared-nothing architecture that is optimized for fast parallel recovery of nodes or an entire cluster.
 Persistence provides a disk backup of region entry data. The keys and values of all entries are saved to disk, like having a replica of the region on disk. 
@@ -23,7 +23,7 @@ The krf oplog will improve startup performance by allowing Geode to load the ent
 When you start a member with a persistent region, the data is retrieved from disk stores to recreate the member’s persistent region. 
 Entry keys are loaded from the key file in the disk store before considering entry values. Once all keys are loaded, Geode loads the entry values asynchronously.
 
-If you would like to know more about Apache Geode disk storage, here is the link to the documentation: https://geode.apache.org/docs/guide/12/managing/disk_storage/chapter_overview.html
+If you would like to know more about Apache Geode disk storage, please refer to the [Geode documentation](https://geode.apache.org/docs/guide/12/managing/disk_storage/chapter_overview.html).
 
 ## Challenges for the Performance Persistence Recovery
 
