@@ -99,15 +99,26 @@ org.apache.geode.distributed.ServerLauncher.main(ServerLauncher.java:256)
 ```
   
 In the example log, there are two thread stacks. The stack for the thread waiting for the lock, and the other stack for the thread holding the lock. 
-Thread 49 is waiting for the lock on the `HashMap` to be released. Based on the thread stack `org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3212)`, 
+Thread 49 is waiting for the lock on the `HashMap` to be released. Based on the thread stack 
+
+`org.apache.geode.internal.cache.GemFireCacheImpl.getRegion(GemFireCacheImpl.java:3212)`, 
+
 we can tell from the source code, the `HashMap` is `GemFireCacheImpl.rootRegions`.
-From the stack, we can also see `org.apache.geode.internal.cache.CreateRegionProcessor$CreateRegionMessage.process(CreateRegionProcessor.java:362)`. 
+From the stack, we can also see 
+
+`org.apache.geode.internal.cache.CreateRegionProcessor$CreateRegionMessage.process(CreateRegionProcessor.java:362)`.
+ 
 Thread 49 is trying to process a `CreateRegionMessage`, which is sent from the other server in order to create a region. 
 Thread 49 is supposed to generate a `CreateRegionReplyMessage` and return it to the sender of `CreateRegionMessage`. 
 This is part of the process of creating a replicated region in all the servers.
 As we keep reading the example log, we can see the `Lock owner thread stack`.
-The lock owner thread is recovering the persisted krf oplogs. Because the thread is executing `org.apache.geode.internal.cache.Oplog.readKrf(Oplog.java:1762)`, 
-the thread is holding the lock on the `HashMap` `GemFireCacheImpl.rootRegions` at `org.apache.geode.internal.cache.GemFireCacheImpl.createVMRegion(GemFireCacheImpl.java:2925)`
+The lock owner thread is recovering the persisted krf oplogs. Because the thread is executing 
+
+`org.apache.geode.internal.cache.Oplog.readKrf(Oplog.java:1762)`, 
+
+the thread is holding the lock on the `HashMap` `GemFireCacheImpl.rootRegions` at 
+
+`org.apache.geode.internal.cache.GemFireCacheImpl.createVMRegion(GemFireCacheImpl.java:2925)`
 
 On one of the other servers, server2, we can see a warning in the log:
 ```
